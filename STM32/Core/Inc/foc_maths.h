@@ -2,6 +2,7 @@
  * foc_maths.h
  *
  *  Created on: Jan 1, 2026
+ *      Author: Afraaz Khan
  */
 #ifndef FOC_MATHS_H
 #define FOC_MATHS_H

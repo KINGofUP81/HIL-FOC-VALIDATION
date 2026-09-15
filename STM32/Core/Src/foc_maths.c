@@ -2,6 +2,7 @@
  * foc_maths.c
  *
  *  Created on: Jan 1, 2026
+ *      Author: Afraaz Khan
  */
 
 #include "foc_maths.h"

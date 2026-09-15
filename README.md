@@ -164,14 +164,14 @@ HIL-FOC-VALIDATION/
 │   ├── Drivers/, Middlewares/                    # ST HAL and USB middleware
 │   └── G431_CDC.ioc                              # CubeMX configuration
 ├── Documentation/
-│   ├── HIL_FOC_Validation_Report.pdf                 # Project report
+│   ├── HIL_FOC_Validation_Report_AfraazKhan.pdf      # Project report
 │   └── Mathematical_analysis_foc.html            # FOC maths: sine waves → SVPWM
 └── Media/                                        # Model screenshots and result plots
 ```
 
 📘 **Theory:** [`Mathematical_analysis_foc.html`](Documentation/Mathematical_analysis_foc.html) walks through the full maths: three-phase generation, Clarke, Park, PI control, decoupling, inverse Park, SVPWM sectors, timing and duty cycles.
 
-📄 **Report:** [HIL validation report (PDF)](Documentation/HIL_FOC_Validation_Report.pdf)
+📄 **Report:** [HIL validation report (PDF)](Documentation/HIL_FOC_Validation_Report_AfraazKhan.pdf)
 
 ## Roadmap
 

@@ -2,6 +2,7 @@
  * hil_tx.c
  *
  *  Created on: Jan 1, 2026
+ *      Author: Afraaz Khan
  */
 #include "hil_tx.h"
 #include "usbd_cdc_if.h"
