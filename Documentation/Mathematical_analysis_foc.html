@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FOC Mathematics: From Three-Phase Sine Waves to SVPWM</title>
+<style>
+:root{
+  --bg:#0b1020; --panel:#121a2d; --panel2:#0f1728; --text:#e8edf7;
+  --muted:#aab5c8; --accent:#6ea8fe; --line:#26334d; --good:#75d69c;
+  --warn:#f2c879; --code:#0a0f1b;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+main{max-width:1100px;margin:auto;padding:42px 24px 80px}
+h1,h2,h3{line-height:1.2}
+h1{font-size:38px;margin-bottom:8px}
+h2{font-size:27px;margin-top:48px;border-bottom:1px solid var(--line);padding-bottom:10px}
+h3{font-size:20px;margin-top:30px}
+p{color:#d3dbea}
+.small{color:var(--muted);font-size:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:18px 0}
+.eq{background:var(--code);border-left:3px solid var(--accent);padding:15px 18px;margin:14px 0;border-radius:8px;font-family:"Cambria Math",Georgia,serif;font-size:19px;overflow-x:auto}
+.step{display:grid;grid-template-columns:58px 1fr;gap:16px;align-items:start;margin:18px 0}
+.num{width:42px;height:42px;border-radius:50%;background:#1b2945;color:#bcd5ff;display:grid;place-items:center;font-weight:700}
+table{width:100%;border-collapse:collapse;margin:15px 0}
+th,td{border:1px solid var(--line);padding:10px 12px;text-align:left}
+th{background:#172239}
+code{background:#0b1220;padding:2px 5px;border-radius:4px}
+pre{background:var(--code);padding:16px;border:1px solid var(--line);border-radius:9px;overflow:auto}
+.badge{display:inline-block;padding:4px 9px;border:1px solid var(--line);border-radius:999px;color:#c9d7f3;margin:3px;font-size:13px}
+.note{border-left:3px solid var(--warn);padding:10px 16px;background:#17191d}
+.good{border-left:3px solid var(--good);padding:10px 16px;background:#101c19}
+svg{max-width:100%;height:auto;background:#0b1220;border:1px solid var(--line);border-radius:10px}
+.footer{margin-top:55px;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<h1>FOC Mathematics: From Three-Phase Sine Waves to SVPWM</h1>
+<p class="small">Mathematical companion to the HIL FOC project using MATLAB/Simulink and STM32G431.</p>
+
+<div class="card">
+<strong>What this document covers</strong>
+<p>
+This page follows the signal path used in the project: simulated three-phase motor quantities →
+electrical angle → Clarke transform → Park transform → <i>i</i><sub>d</sub>/<i>i</i><sub>q</sub> current control →
+PI controllers and motor-dependent decoupling → inverse Park transform → V<sub>α</sub>/V<sub>β</sub> →
+space-vector representation → SVPWM timing → inverter duty cycles.
+</p>
+<p class="small">
+The uploaded project specifically documents Simulink generating phase-current samples and electrical angle,
+sending them to the STM32G431, performing Clarke/Park transformations, returning i<sub>d</sub>/i<sub>q</sub>,
+then applying closed-loop control and inverse Park to obtain V<sub>α</sub>/V<sub>β</sub>.
+The project identifies the SVPWM timing/duty calculation as the next reconstruction step from these outputs.
+</p>
+</div>
+
+<h2>1. Signal chain — explained in words</h2>
+<div class="card">
+<p>
+The process begins in MATLAB/Simulink, where the virtual motor and load model generate the three
+phase-current quantities and the electrical rotor angle. In the HIL implementation, these values are
+converted to single-precision floating-point values, packed into a byte stream, and transmitted to
+the STM32G431 through UART.
+</p>
+<p>
+The STM32 receives and reconstructs the current and angle values. It first applies the Clarke
+transformation to convert the three-phase <i>abc</i> quantities into the stationary two-axis
+<i>αβ</i> reference frame. It then applies the Park transformation, using the electrical rotor angle,
+to rotate the stationary frame into the synchronously rotating <i>dq</i> frame. This produces
+<i>i</i><sub>d</sub> and <i>i</i><sub>q</sub>.
+</p>
+<p>
+The calculated <i>i</i><sub>d</sub> and <i>i</i><sub>q</sub> values are sent back to Simulink. Simulink
+uses them as feedback for the closed-loop current/torque control. The difference between the requested
+and measured currents becomes the PI-controller error. The PI controllers generate voltage commands,
+and motor-dependent decoupling terms are added to compensate for the cross-coupling effects of the
+rotating reference frame.
+</p>
+<p>
+The resulting <i>V</i><sub>d</sub> and <i>V</i><sub>q</sub> commands are converted back into stationary-frame
+components by the inverse Park transformation. The final <i>V</i><sub>α</sub> and <i>V</i><sub>β</sub> values
+represent the requested stator voltage vector. These two quantities are then sufficient to reconstruct
+the vector magnitude and angle and, subsequently, the SVPWM switching times and inverter duty cycles.
+</p>
+<p class="small">
+This description follows the workflow documented in the supplied HIL project: Simulink generates the
+motor-side quantities, the STM32G431 performs Clarke/Park processing, the returned d-q currents are used
+for closed-loop control, and inverse Park produces Vα/Vβ. fileciteturn2file0L23-L35
+</p>
+</div>
+
+<h2>2. Generating the three-phase waveforms</h2>
+<div class="step"><div class="num">1</div><div>
+<h3>Balanced three-phase quantities</h3>
+<p>A balanced sinusoidal three-phase set can be written as:</p>
+<div class="eq">i<sub>a</sub>(t) = Î sin(ω<sub>e</sub>t + φ)</div>
+<div class="eq">i<sub>b</sub>(t) = Î sin(ω<sub>e</sub>t + φ − 2π/3)</div>
+<div class="eq">i<sub>c</sub>(t) = Î sin(ω<sub>e</sub>t + φ + 2π/3)</div>
+<p>For a balanced system:</p>
+<div class="eq">i<sub>a</sub> + i<sub>b</sub> + i<sub>c</sub> = 0</div>
+</div></div>
+
+<h3>Mechanical speed → electrical speed</h3>
+<div class="eq">ω<sub>m</sub> = 2π · RPM / 60</div>
+<div class="eq">ω<sub>e</sub> = p · ω<sub>m</sub> = 2πp·RPM/60</div>
+<div class="eq">θ<sub>e</sub>(t) = θ<sub>e,0</sub> + ∫ω<sub>e</sub>(t)dt</div>
+<p>Here <i>p</i> is the number of pole pairs. If speed is constant:</p>
+<div class="eq">θ<sub>e</sub>(t) = θ<sub>e,0</sub> + ω<sub>e</sub>t</div>
+
+<div class="card">
+<h3>Project operating point: 500 RPM</h3>
+<p>The model uses <strong>500 RPM</strong> for the speed used to calculate electrical angular speed.</p>
+<div class="eq">ω<sub>m</sub> = 2π(500)/60 = 52.360 rad/s</div>
+<div class="eq">ω<sub>e</sub> = p(52.360) = 52.360p rad/s</div>
+<p>
+The exact electrical speed therefore depends on the number of pole pairs <i>p</i> configured in the motor model.
+For example, if a seven-pole-pair motor were used, ω<sub>e</sub> would be 366.519 rad/s. This seven-pole-pair
+number is only an example here and should be replaced by the actual pole-pair value from the Simulink motor block
+if it differs.
+</p>
+<p>
+The electrical angle is obtained by integrating ω<sub>e</sub>. In a constant-speed case,
+θ<sub>e</sub>(t)=θ<sub>e,0</sub>+ω<sub>e</sub>t. The 30° angle used in the numerical Clarke/Park example below
+is a snapshot of the electrical angle at one instant; it is not a claim that the motor remains at 30°.
+</p>
+</div>
+
+<h2>3. Clarke transformation — abc → αβ</h2>
+<p>The Clarke transform removes the redundant three-phase representation and produces a stationary
+two-axis representation.</p>
+
+<p>To keep the mathematics readable in a normal browser, the Clarke transform is written as two scalar
+equations rather than as a matrix:</p>
+<div class="eq">i<sub>α</sub> = (2/3)i<sub>a</sub> − (1/3)i<sub>b</sub> − (1/3)i<sub>c</sub></div>
+<div class="eq">i<sub>β</sub> = (1/√3)(i<sub>b</sub> − i<sub>c</sub>)</div>
+
+<p>For a balanced three-wire system where i<sub>a</sub>+i<sub>b</sub>+i<sub>c</sub>=0, these equations simplify to:</p>
+<div class="eq">i<sub>α</sub> = i<sub>a</sub></div>
+<div class="eq">i<sub>β</sub> = (i<sub>a</sub> + 2i<sub>b</sub>)/√3</div>
+
+<div class="card">
+<h3>Consistent worked example used throughout this page</h3>
+<p>
+To make every numerical step traceable, the same balanced three-phase sample is used from the phase currents
+through Clarke and Park. Take a current amplitude of 10 A and an electrical angle of 30°:
+</p>
+<div class="eq">i<sub>a</sub> = 10sin30° = 5.000 A</div>
+<div class="eq">i<sub>b</sub> = 10sin(30°−120°) = 10sin(−90°) = −10.000 A</div>
+<div class="eq">i<sub>c</sub> = 10sin(30°+120°) = 10sin150° = 5.000 A</div>
+<div class="eq">i<sub>a</sub> + i<sub>b</sub> + i<sub>c</sub> = 5−10+5 = 0</div>
+
+<p>Applying Clarke:</p>
+<div class="eq">i<sub>α</sub> = (2/3)(5) − (1/3)(−10) − (1/3)(5) = 5.000 A</div>
+<div class="eq">i<sub>β</sub> = (1/√3)(−10−5) = −8.660 A</div>
+
+<p>Now apply Park using the same θ<sub>e</sub>=30°:</p>
+<div class="eq">i<sub>d</sub> = 5cos30° + (−8.660)sin30° ≈ 0 A</div>
+<div class="eq">i<sub>q</sub> = −5sin30° + (−8.660)cos30° ≈ −10.000 A</div>
+
+<p>This is the expected result for this particular choice of phase angle: the current vector is aligned
+with the negative q-axis, so the d-axis component is approximately zero and the q-axis component carries
+the full 10 A magnitude.</p>
+</div>
+
+<h2>4. Park transformation — αβ → dq</h2>
+<p>The Park transform rotates the stationary αβ frame by the electrical rotor angle θ<sub>e</sub>.
+This turns sinusoidally varying quantities into approximately DC quantities in steady state.</p>
+
+<div class="eq">i<sub>d</sub> = i<sub>α</sub>cosθ<sub>e</sub> + i<sub>β</sub>sinθ<sub>e</sub></div>
+<div class="eq">i<sub>q</sub> = −i<sub>α</sub>sinθ<sub>e</sub> + i<sub>β</sub>cosθ<sub>e</sub></div>
+
+<h3>Inverse Park transformation</h3>
+<div class="eq">V<sub>α</sub> = V<sub>d</sub>cosθ<sub>e</sub> − V<sub>q</sub>sinθ<sub>e</sub></div>
+<div class="eq">V<sub>β</sub> = V<sub>d</sub>sinθ<sub>e</sub> + V<sub>q</sub>cosθ<sub>e</sub></div>
+
+<div class="card">
+<h3>Continuing the numerical example into voltage-vector generation</h3>
+<p>
+The current example above deliberately produces i<sub>d</sub>≈0 A and i<sub>q</sub>=−10 A. For the voltage
+and SVPWM stages, use a clearly stated illustrative controller output of
+V<sub>d</sub>=2.000 V and V<sub>q</sub>=8.000 V at the same θ<sub>e</sub>=30°. These voltage values are
+illustrative calculation values, not claimed to be the measured PI gains or voltage outputs of the uploaded model.
+</p>
+<div class="eq">V<sub>α</sub> = 2cos30° − 8sin30° = 1.732 − 4.000 = −2.268 V</div>
+<div class="eq">V<sub>β</sub> = 2sin30° + 8cos30° = 1.000 + 6.928 = 7.928 V</div>
+<div class="eq">V<sub>ref</sub> = √[(−2.268)² + (7.928)²] ≈ 8.246 V</div>
+</div>
+
+<h2>5. Current errors and PI controllers</h2>
+<p>The controller compares the requested and measured dq currents.</p>
+
+<div class="eq">e<sub>d</sub>(t) = i<sub>d,ref</sub>(t) − i<sub>d</sub>(t)</div>
+<div class="eq">e<sub>q</sub>(t) = i<sub>q,ref</sub>(t) − i<sub>q</sub>(t)</div>
+
+<p>Continuous-time PI controller:</p>
+<div class="eq">u(t) = K<sub>p</sub>e(t) + K<sub>i</sub>∫e(t)dt</div>
+
+<p>Thus the uncoupled voltage commands are:</p>
+<div class="eq">V<sub>d,PI</sub> = K<sub>pd</sub>e<sub>d</sub> + K<sub>id</sub>∫e<sub>d</sub>dt</div>
+<div class="eq">V<sub>q,PI</sub> = K<sub>pq</sub>e<sub>q</sub> + K<sub>iq</sub>∫e<sub>q</sub>dt</div>
+
+<h3>Discrete implementation</h3>
+<div class="eq">I[k] = I[k−1] + K<sub>i</sub>T<sub>s</sub>e[k]</div>
+<div class="eq">u[k] = K<sub>p</sub>e[k] + I[k]</div>
+
+<p>An anti-windup limiter is normally required when the voltage command reaches the available DC-bus voltage.</p>
+
+<h2>6. Motor-dependent decoupling</h2>
+<p>For a PMSM dq model, cross-coupling terms arise because the rotating reference frame is itself moving.</p>
+
+<div class="eq">V<sub>d</sub> = V<sub>d,PI</sub> − ω<sub>e</sub>L<sub>q</sub>i<sub>q</sub></div>
+<div class="eq">V<sub>q</sub> = V<sub>q,PI</sub> + ω<sub>e</sub>(L<sub>d</sub>i<sub>d</sub> + ψ<sub>f</sub>)</div>
+
+<p>where L<sub>d</sub> and L<sub>q</sub> are dq inductances and ψ<sub>f</sub> is permanent-magnet flux linkage.</p>
+
+<div class="note">
+<strong>Project-specific note:</strong> your report says the decoupling terms are dependent on the motor construction
+and that the simulation uses the characteristics of the Blue Robotics T200 thruster. Therefore the exact
+parameter values and sign convention must come from your Simulink motor model; they should not be assumed
+from the generic equations above.
+</div>
+
+<h2>7. From Vd/Vq to Vα/Vβ</h2>
+<p>After PI correction and decoupling, the inverse Park transform produces the stationary-frame voltage vector:</p>
+
+<div class="eq">V<sub>α</sub> = V<sub>d</sub>cosθ<sub>e</sub> − V<sub>q</sub>sinθ<sub>e</sub></div>
+<div class="eq">V<sub>β</sub> = V<sub>d</sub>sinθ<sub>e</sub> + V<sub>q</sub>cosθ<sub>e</sub></div>
+
+<p>This is the important hand-off point for SVPWM.</p>
+
+<h3>Voltage-vector magnitude</h3>
+<div class="eq">V<sub>ref</sub> = √(V<sub>α</sub>² + V<sub>β</sub>²)</div>
+
+<h3>Voltage-vector angle</h3>
+<div class="eq">θ = atan2(V<sub>β</sub>, V<sub>α</sub>)</div>
+
+<p>Normalize the angle into 0 ≤ θ &lt; 2π if needed.</p>
+
+<div class="card">
+<b>Worked example continuing the calculation above:</b>
+<div class="eq">V<sub>α</sub> = −2.268 V, &nbsp; V<sub>β</sub> = 7.928 V</div>
+<div class="eq">V<sub>ref</sub> = √[(−2.268)² + (7.928)²] ≈ 8.246 V</div>
+<div class="eq">θ = atan2(7.928,−2.268) ≈ 105.96°</div>
+<p>Because 105.96° lies between 60° and 120°, the vector is in <strong>Sector 2</strong>.</p>
+</div>
+
+<h2>8. SVPWM concept</h2>
+<p>A two-level three-phase inverter has eight switching states:</p>
+
+<table>
+<tr><th>State</th><th>Switching vector</th><th>Description</th></tr>
+<tr><td>000</td><td>V0</td><td>Zero vector</td></tr>
+<tr><td>100</td><td>V1</td><td>Active vector</td></tr>
+<tr><td>110</td><td>V2</td><td>Active vector</td></tr>
+<tr><td>010</td><td>V3</td><td>Active vector</td></tr>
+<tr><td>011</td><td>V4</td><td>Active vector</td></tr>
+<tr><td>001</td><td>V5</td><td>Active vector</td></tr>
+<tr><td>101</td><td>V6</td><td>Active vector</td></tr>
+<tr><td>111</td><td>V7</td><td>Zero vector</td></tr>
+</table>
+
+<p>The reference vector is synthesized during one PWM period T<sub>s</sub> using the two adjacent active
+vectors and the zero vector.</p>
+
+<div class="eq">T<sub>s</sub> = T<sub>1</sub> + T<sub>2</sub> + T<sub>0</sub></div>
+
+<div class="eq">T<sub>0</sub> = T<sub>s</sub> − T<sub>1</sub> − T<sub>2</sub></div>
+
+<h2>9. Sector calculation</h2>
+<p>Each sector spans 60°. For θ in [0, 2π):</p>
+<div class="eq">Sector = floor(θ/(π/3)) + 1</div>
+
+<p>For the local angle inside the selected sector:</p>
+<div class="eq">θ<sub>s</sub> = θ − (Sector−1)π/3</div>
+
+<div class="card">
+For the voltage-vector example above, Vα is negative and Vβ is positive, so:
+<div class="eq">θ = atan2(7.928,−2.268) ≈ 105.96°</div>
+<div class="eq">Sector = floor(105.96/60) + 1 = 2</div>
+<div class="eq">θ<sub>s</sub> = 105.96° − 60° = 45.96°</div>
+</div>
+
+<h2>10. SVPWM timing equations</h2>
+<p>For the common centered SVPWM formulation:</p>
+
+<div class="eq">T<sub>1</sub> = (√3 T<sub>s</sub> V<sub>ref</sub>/V<sub>dc</sub>) sin(π/3 − θ<sub>s</sub>)</div>
+<div class="eq">T<sub>2</sub> = (√3 T<sub>s</sub> V<sub>ref</sub>/V<sub>dc</sub>) sin(θ<sub>s</sub>)</div>
+<div class="eq">T<sub>0</sub> = T<sub>s</sub> − T<sub>1</sub> − T<sub>2</sub></div>
+
+<p>These equations are valid in the linear SVPWM region where the requested vector can be synthesized
+without overmodulation.</p>
+
+<h3>Worked SVPWM example</h3>
+<p>For an illustrative calculation, assume:</p>
+<table>
+<tr><th>Quantity</th><th>Value</th></tr>
+<tr><td>Vα</td><td>−2.268 V</td></tr>
+<tr><td>Vβ</td><td>7.928 V</td></tr>
+<tr><td>Vref</td><td>8.246 V</td></tr>
+<tr><td>θ</td><td>105.96°</td></tr>
+<tr><td>Sector</td><td>2</td></tr>
+<tr><td>θs</td><td>45.96°</td></tr>
+<tr><td>Vdc</td><td>24 V (illustrative)</td></tr>
+<tr><td>Ts</td><td>100 µs (illustrative)</td></tr>
+</table>
+
+<div class="eq">
+T<sub>1</sub> = (√3·100µs·8.246/24) sin(60°−45.96°)
+≈ 14.44 µs
+</div>
+
+<div class="eq">
+T<sub>2</sub> = (√3·100µs·8.246/24) sin(45.96°)
+≈ 42.78 µs
+</div>
+
+<div class="eq">T<sub>0</sub> = 100 − 8.60 − 43.05 ≈ 42.78 µs</div>
+
+<div class="good">
+The important point is that <strong>Vα and Vβ completely determine the reference vector</strong>.
+Once Vref, θ, sector and the local sector angle are known, the SVPWM timing can be calculated.
+</div>
+
+<h2>11. Convert T1/T2/T0 into duty cycles</h2>
+<p>A centered SVPWM implementation distributes half of T0 at the beginning and half at the end of the switching sequence.</p>
+
+<p>For Sector 1, one common sequence is:</p>
+<p>
+For a centered SVPWM implementation in Sector 1, the inverter applies the zero vector first,
+then the first adjacent active vector, then the second adjacent active vector, reaches the opposite
+zero vector at the center of the PWM period, and then follows the sequence in reverse. This symmetric
+sequence reduces switching asymmetry and is one common implementation of SVPWM.
+</p>
+
+<p>The phase-on times for Sector 1 can be written:</p>
+<div class="eq">T<sub>a</sub> = (T<sub>s</sub> + T<sub>1</sub> + T<sub>2</sub>)/2</div>
+<div class="eq">T<sub>b</sub> = (T<sub>s</sub> + T<sub>1</sub> − T<sub>2</sub>)/2</div>
+<div class="eq">T<sub>c</sub> = T<sub>0</sub>/2</div>
+
+<p>Then:</p>
+<div class="eq">D<sub>a</sub> = T<sub>a</sub>/T<sub>s</sub></div>
+<div class="eq">D<sub>b</sub> = T<sub>b</sub>/T<sub>s</sub></div>
+<div class="eq">D<sub>c</sub> = T<sub>c</sub>/T<sub>s</sub></div>
+
+<p>For Sectors 2–6, the same timing values are mapped to the appropriate phase order according to the active-vector sequence.</p>
+
+<div class="note">
+<strong>Implementation warning:</strong> there are several equivalent SVPWM duty-cycle formulations.
+The exact phase mapping, timer polarity, center-aligned mode and sector table must match the PWM implementation
+used by the inverter timer. The equations here describe the standard centered-SVPWM approach, not a claim about
+the exact timer implementation in this project.
+</div>
+
+<h2>12. Optional equivalent inverse-Clarke calculation</h2>
+<p>Once Vα and Vβ are known, the corresponding balanced phase-voltage references can also be reconstructed:</p>
+
+<div class="eq">V<sub>a</sub> = V<sub>α</sub></div>
+<div class="eq">V<sub>b</sub> = −V<sub>α</sub>/2 + (√3/2)V<sub>β</sub></div>
+<div class="eq">V<sub>c</sub> = −V<sub>α</sub>/2 − (√3/2)V<sub>β</sub></div>
+
+<p>For the illustrative Vα/Vβ example:</p>
+<div class="eq">V<sub>a</sub> = −2.268 V</div>
+<div class="eq">V<sub>b</sub> ≈ 8.999 V</div>
+<div class="eq">V<sub>c</sub> ≈ −6.731 V</div>
+
+<div class="card">
+The three reconstructed phase references satisfy:
+<div class="eq">V<sub>a</sub> + V<sub>b</sub> + V<sub>c</sub> ≈ 0</div>
+<p>SVPWM then adds the appropriate common-mode/zero-vector timing through its switching sequence rather than
+simply treating these as three independent sinusoidal PWM commands.</p>
+</div>
+
+<h2>13. Complete formula sheet</h2>
+<table>
+<tr><th>Stage</th><th>Formula</th></tr>
+<tr><td>Mechanical angular speed</td><td>ωm = 2π·RPM/60</td></tr>
+<tr><td>Electrical angular speed</td><td>ωe = pωm</td></tr>
+<tr><td>Electrical angle</td><td>θe = ∫ωe dt</td></tr>
+<tr><td>Phase-a current</td><td>ia = Î sin(ωet+φ)</td></tr>
+<tr><td>Phase-b current</td><td>ib = Î sin(ωet+φ−2π/3)</td></tr>
+<tr><td>Phase-c current</td><td>ic = Î sin(ωet+φ+2π/3)</td></tr>
+<tr><td>Clarke α</td><td>iα = (2/3)(ia−ib/2−ic/2)</td></tr>
+<tr><td>Clarke β</td><td>iβ = (√3/3)(ib−ic)</td></tr>
+<tr><td>Park d</td><td>id = iα cosθe + iβ sinθe</td></tr>
+<tr><td>Park q</td><td>iq = −iα sinθe + iβ cosθe</td></tr>
+<tr><td>Current errors</td><td>ed = id,ref−id ; eq = iq,ref−iq</td></tr>
+<tr><td>PI controller</td><td>u = Kp e + Ki∫e dt</td></tr>
+<tr><td>Discrete PI integrator</td><td>I[k] = I[k−1]+KiTs e[k]</td></tr>
+<tr><td>PMSM d-axis decoupling</td><td>Vd = Vd,PI − ωeLq iq</td></tr>
+<tr><td>PMSM q-axis decoupling</td><td>Vq = Vq,PI + ωe(Ld id + ψf)</td></tr>
+<tr><td>Inverse Park α</td><td>Vα = Vd cosθe − Vq sinθe</td></tr>
+<tr><td>Inverse Park β</td><td>Vβ = Vd sinθe + Vq cosθe</td></tr>
+<tr><td>Voltage magnitude</td><td>Vref = √(Vα²+Vβ²)</td></tr>
+<tr><td>Voltage angle</td><td>θ = atan2(Vβ,Vα)</td></tr>
+<tr><td>Sector</td><td>floor(θ/(π/3))+1</td></tr>
+<tr><td>Local sector angle</td><td>θs = θ−(sector−1)π/3</td></tr>
+<tr><td>SVPWM T1</td><td>T1 = √3 Ts Vref/Vdc · sin(π/3−θs)</td></tr>
+<tr><td>SVPWM T2</td><td>T2 = √3 Ts Vref/Vdc · sin(θs)</td></tr>
+<tr><td>Zero-vector time</td><td>T0 = Ts−T1−T2</td></tr>
+<tr><td>Duty ratio</td><td>D = Tphase/Ts</td></tr>
+</table>
+
+<h2>14. How this maps to the HIL project</h2>
+<p>
+The uploaded project reports that Simulink generates the phase-current samples and electrical angle,
+serializes the variables as single-precision values and sends them to the STM32G4 over UART.
+The STM32G431 reconstructs the variables and performs Clarke and Park transformations, producing
+i<sub>d</sub> and i<sub>q</sub>. These are returned to Simulink for closed-loop control.
+</p>
+<p>
+The project then applies PI control, torque/speed control and motor-dependent decoupling before the
+inverse Park transformation produces V<sub>α</sub> and V<sub>β</sub>. The report identifies these two
+quantities as the synthesized stationary-frame stator voltage vector and explains that SVPWM timing
+and duty cycles can be reconstructed from them.
+</p>
+
+<div class="card">
+<h3>What has actually been validated</h3>
+<ul>
+<li>Simulated current and electrical-angle generation.</li>
+<li>UART exchange between Simulink and STM32.</li>
+<li>Embedded Clarke and Park transformations.</li>
+<li>i<sub>d</sub>/i<sub>q</sub> extraction and monitoring.</li>
+<li>PI current-control tuning and decoupling response.</li>
+<li>Inverse-Park V<sub>α</sub>/V<sub>β</sub> behavior.</li>
+</ul>
+<p class="small">
+The physical gate-driver/inverter and physical-motor validation are described as future development in the project material.
+</p>
+</div>
+
+<h2>15. Important convention notes</h2>
+<ul>
+<li>FOC equations depend on the sign convention chosen for q-axis direction and electrical angle.</li>
+<li>Clarke transforms have amplitude-invariant and power-invariant conventions; numerical scaling changes between them.</li>
+<li>The decoupling equations shown are the standard PMSM form. Use the exact motor equations/parameters from the Simulink model for this project.</li>
+<li>SVPWM duty-cycle tables differ in presentation even when they synthesize the same reference vector.</li>
+<li>For actual STM32 timer implementation, also account for dead time, PWM polarity, center-aligned counting and timer resolution.</li>
+</ul>
+
+<div class="footer">
+Prepared as a mathematical companion for the HIL-FOC-Validation repository. Project-specific statements are based on the supplied HIL validation document; standard FOC/SVPWM equations are included to complete the mathematical path from phase quantities to inverter duty cycles.
+</div>
+</main>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# STM32CubeIDE build output
+STM32/Debug/
+STM32/Release/
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.list
+
+# Simulink generated / cache files
+slprj/
+*.slxc
+*.slx.original
+*.slx.autosave
+*.asv
+*.mexw64
+
+# Machine-specific IDE debug configurations
+*.launch
